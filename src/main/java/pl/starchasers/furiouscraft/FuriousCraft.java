@@ -61,12 +61,6 @@ public class FuriousCraft extends DummyModContainer implements IFMLLoadingPlugin
 		return null;
 	}
 
-	@Subscribe
-	public void load(FMLInitializationEvent event) {
-		System.out.println("Registering PTU!");
-		FMLCommonHandler.instance().bus().register(new FuriousCraftPartialTileUnloader());
-	}
-
 	@Override
 	public boolean registerBus(EventBus bus, LoadController controller)
 	{

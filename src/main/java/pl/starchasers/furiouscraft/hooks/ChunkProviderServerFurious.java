@@ -1,5 +1,6 @@
 package pl.starchasers.furiouscraft.hooks;
 
+import com.google.common.collect.Lists;
 import cpw.mods.fml.common.registry.GameRegistry;
 import gnu.trove.map.hash.TLongIntHashMap;
 import gnu.trove.map.hash.TLongObjectHashMap;
@@ -327,7 +328,9 @@ q	 * Will return back a chunk, if it doesn't exist and its not a MP client it wi
 	{
 		int i = 0;
 
-		for (Chunk chunk : (List<Chunk>) loadedChunks)
+		List<Chunk> loadedChunksCopy = Lists.newArrayList(this.loadedChunks);
+
+		for (Chunk chunk : loadedChunksCopy)
 		{
 			if (p_73151_1_)
 			{

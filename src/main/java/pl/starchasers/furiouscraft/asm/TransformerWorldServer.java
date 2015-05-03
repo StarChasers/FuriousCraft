@@ -1,17 +1,14 @@
-package pl.starchasers.furiouscraft;
+package pl.starchasers.furiouscraft.asm;
 
 import org.objectweb.asm.ClassReader;
 import org.objectweb.asm.ClassWriter;
-import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
-import org.objectweb.asm.tree.FieldInsnNode;
 import org.objectweb.asm.tree.MethodInsnNode;
 import org.objectweb.asm.tree.MethodNode;
 import org.objectweb.asm.tree.TypeInsnNode;
 
 import java.util.Iterator;
-import java.util.Set;
 
 public class TransformerWorldServer {
 	private static final String createChunkProviderName = Transformer.OBFUSCATED ? "j" : "createChunkProvider";
@@ -31,13 +28,13 @@ public class TransformerWorldServer {
 				if (ins instanceof TypeInsnNode) {
 					TypeInsnNode tins = (TypeInsnNode) ins;
 					if ("net/minecraft/world/gen/ChunkProviderServer".equals(tins.desc) || "ms".equals(tins.desc)) {
-						tins.desc = "pl/starchasers/furiouscraft/ChunkProviderServerFurious";
+						tins.desc = "pl/starchasers/furiouscraft/hooks/ChunkProviderServerFurious";
 						System.out.println("ChunkProvider patched (1/2)!");
 					}
 				} else if (ins instanceof MethodInsnNode) {
 					MethodInsnNode mins = (MethodInsnNode) ins;
 					if ("net/minecraft/world/gen/ChunkProviderServer".equals(mins.owner) || "ms".equals(mins.owner)) {
-						mins.owner = "pl/starchasers/furiouscraft/ChunkProviderServerFurious";
+						mins.owner = "pl/starchasers/furiouscraft/hooks/ChunkProviderServerFurious";
 						System.out.println("ChunkProvider patched (2/2)!");
 					}
 				}

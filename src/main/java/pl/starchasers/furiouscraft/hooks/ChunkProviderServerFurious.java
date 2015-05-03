@@ -1,4 +1,4 @@
-package pl.starchasers.furiouscraft;
+package pl.starchasers.furiouscraft.hooks;
 
 import cpw.mods.fml.common.registry.GameRegistry;
 import gnu.trove.map.hash.TLongIntHashMap;
@@ -31,88 +31,76 @@ import org.apache.logging.log4j.Logger;
 import java.io.IOException;
 import java.util.Date;
 import java.util.List;
-import java.util.Set;
 
 public class ChunkProviderServerFurious extends ChunkProviderServer {
 	private static final Logger logger = LogManager.getLogger();
-	/**
-	 * used by unload100OldestChunks to iterate the loadedChunkHashMap for unload (underlying assumption, first in,
-	 * first out)
-	 */
+
+	private enum State {
+		CLEANING, WAITING
+	};
+
 	private Chunk defaultEmptyChunk;
-	/** if this is false, the defaultEmptyChunk will be returned by the provider */
 	public TLongHashSet chunksToUnload = new TLongHashSet();
 	public TLongObjectHashMap<Chunk> chunksToSave = new TLongObjectHashMap<Chunk>();
 	public TLongIntHashMap chunkGracePeriod = new TLongIntHashMap();
 	public TLongIntHashMap chunkMaxGracePeriod = new TLongIntHashMap();
-	private Set<Long> loadingChunks = com.google.common.collect.Sets.newHashSet();
+	private TLongHashSet loadingChunks = new TLongHashSet();
 	private boolean isSaving = false;
 	private long time;
+	private State state = State.WAITING;
 
-	public ChunkProviderServerFurious(WorldServer p_i1520_1_, IChunkLoader p_i1520_2_, IChunkProvider p_i1520_3_)
-	{
-		super(p_i1520_1_, p_i1520_2_, p_i1520_3_);
-		this.defaultEmptyChunk = new EmptyChunk(p_i1520_1_, 0, 0);
+	public ChunkProviderServerFurious(WorldServer world, IChunkLoader loader, IChunkProvider provider) {
+		super(world, loader, provider);
+		this.defaultEmptyChunk = new EmptyChunk(world, 0, 0);
 	}
 
-	/**
-	 * Checks to see if a chunk exists at x, y
-	 */
-	public boolean chunkExists(int p_73149_1_, int p_73149_2_)
-	{
-		return this.loadedChunkHashMap.containsItem(ChunkCoordIntPair.chunkXZ2Int(p_73149_1_, p_73149_2_));
+	@Override
+	public boolean chunkExists(int x, int z) {
+		return this.loadedChunkHashMap.containsItem(ChunkCoordIntPair.chunkXZ2Int(x, z));
 	}
 
+	@Override
 	public List func_152380_a() {
 		return this.loadedChunks;
 	}
 
-	/**
-	 * marks chunk for unload by "unload100OldestChunks"  if there is no spawn point, or if the center of the chunk is
-	 * outside 200 blocks (x or z) of the spawn
-	 */
-	public void unloadChunksIfNotNearSpawn(int p_73241_1_, int p_73241_2_)
-	{
-		if (this.worldObj.provider.canRespawnHere() && DimensionManager.shouldLoadSpawn(this.worldObj.provider.dimensionId))
-		{
+	@Override
+	public void unloadChunksIfNotNearSpawn(int x, int z) {
+		if (this.worldObj.provider.canRespawnHere() && DimensionManager.shouldLoadSpawn(this.worldObj.provider.dimensionId)) {
+			// Make sure the spawn is force-loaded
 			ChunkCoordinates chunkcoordinates = this.worldObj.getSpawnPoint();
-			int k = p_73241_1_ * 16 + 8 - chunkcoordinates.posX;
-			int l = p_73241_2_ * 16 + 8 - chunkcoordinates.posZ;
-			short short1 = 128;
+			int xOffset = x * 16 + 8 - chunkcoordinates.posX;
+			int zOffset = z * 16 + 8 - chunkcoordinates.posZ;
+			short distance = 128;
 
-			if (k < -short1 || k > short1 || l < -short1 || l > short1)
-			{
-				this.chunksToUnload.add(Long.valueOf(ChunkCoordIntPair.chunkXZ2Int(p_73241_1_, p_73241_2_)));
+			if (xOffset < -distance || xOffset > distance || zOffset < -distance || zOffset > distance) {
+				this.chunksToUnload.add(ChunkCoordIntPair.chunkXZ2Int(x, z));
 			}
-		}
-		else
-		{
-			this.chunksToUnload.add(Long.valueOf(ChunkCoordIntPair.chunkXZ2Int(p_73241_1_, p_73241_2_)));
+		} else {
+			// Unload any chunk
+			this.chunksToUnload.add(ChunkCoordIntPair.chunkXZ2Int(x, z));
 		}
 	}
 
 	/**
-	 * marks all chunks for unload, ignoring those near the spawn
+	 * Misleading name - actually unloads all chunks not near spawn.
 	 */
-	public void unloadAllChunks()
-	{
+	@Override
+	public void unloadAllChunks() {
 		for (Chunk chunk : (List<Chunk>) this.loadedChunks) {
 			this.unloadChunksIfNotNearSpawn(chunk.xPosition, chunk.zPosition);
 		}
 	}
 
-	/**
-	 * loads or generates the chunk at the chunk location specified
-	 */
-	public Chunk loadChunk(int p_73158_1_, int p_73158_2_)
-	{
-		return loadChunk(p_73158_1_, p_73158_2_, null);
+	public Chunk loadChunk(int x, int z) {
+		return loadChunk(x, z, null);
 	}
 
-	public Chunk loadChunk(int par1, int par2, Runnable runnable)
-	{
-		long k = ChunkCoordIntPair.chunkXZ2Int(par1, par2);
+	public Chunk loadChunk(int x, int z, Runnable callback) {
+		long k = ChunkCoordIntPair.chunkXZ2Int(x, z);
 		synchronized (this.chunksToSave) {
+			// Since we're already saving at this point (!isSaving was checked
+			// earlier), we must force-remove the chunk. This should be rare.
 			if (this.chunksToSave.containsKey(k)) {
 				finishSavingChunk(k, chunksToSave.get(k));
 			}
@@ -120,41 +108,38 @@ public class ChunkProviderServerFurious extends ChunkProviderServer {
 		Chunk chunk = (Chunk) loadedChunkHashMap.getValueByKey(k);
 		AnvilChunkLoader loader = null;
 
-		if (this.currentChunkLoader instanceof AnvilChunkLoader)
-		{
+		if (this.currentChunkLoader instanceof AnvilChunkLoader) {
 			loader = (AnvilChunkLoader) this.currentChunkLoader;
 		}
 
 		// We can only use the queue for already generated chunks
-		if (chunk == null && loader != null && loader.chunkExists(this.worldObj, par1, par2))
-		{
-			if (runnable != null)
-			{
-				ChunkIOExecutor.queueChunkLoad(this.worldObj, loader, this, par1, par2, runnable);
+		if (chunk == null && loader != null && loader.chunkExists(this.worldObj, x, z)) {
+			if (callback != null) {
+				ChunkIOExecutor.queueChunkLoad(this.worldObj, loader, this, x, z, callback);
 				return null;
-			}
-			else
-			{
-				chunk = ChunkIOExecutor.syncChunkLoad(this.worldObj, loader, this, par1, par2);
+			} else {
+				chunk = ChunkIOExecutor.syncChunkLoad(this.worldObj, loader, this, x, z);
 			}
 		}
 		else if (chunk == null)
 		{
-			chunk = this.originalLoadChunk(par1, par2);
+			chunk = this.originalLoadChunk(x, z);
 		}
 
-		// If we didn't load the chunk async and have a callback run it now
-		if (runnable != null)
-		{
-			runnable.run();
+		// If we didn't load the chunk asynchronously and still have a callback run it now.
+		if (callback != null) {
+			callback.run();
 		}
 
 		return chunk;
 	}
 
-	public Chunk originalLoadChunk(int p_73158_1_, int p_73158_2_)
-	{
-		long k = ChunkCoordIntPair.chunkXZ2Int(p_73158_1_, p_73158_2_);
+	/**
+	 * Synchronous chunk loader. Used for generating new chunks and as a
+	 * fallback.
+	 */
+	public Chunk originalLoadChunk(int x, int z) {
+		long k = ChunkCoordIntPair.chunkXZ2Int(x, z);
 		this.chunksToUnload.remove(k);
 		synchronized (this.chunksToSave) {
 			if (this.chunksToSave.containsKey(k)) {
@@ -166,32 +151,24 @@ public class ChunkProviderServerFurious extends ChunkProviderServer {
 		if (chunk == null)
 		{
 			boolean added = loadingChunks.add(k);
-			if (!added)
-			{
-				cpw.mods.fml.common.FMLLog.bigWarning("There is an attempt to load a chunk (%d,%d) in dimension %d that is already being loaded. This will cause weird chunk breakages.", p_73158_1_, p_73158_2_, worldObj.provider.dimensionId);
+			if (!added) {
+				cpw.mods.fml.common.FMLLog.bigWarning("There is an attempt to load a chunk (%d,%d) in dimension %d that is already being loaded. This will cause weird chunk breakages.", x, z, worldObj.provider.dimensionId);
 			}
 			chunk = ForgeChunkManager.fetchDormantChunk(k, this.worldObj);
 			if (chunk == null) {
-				chunk = this.safeLoadChunk(p_73158_1_, p_73158_2_);
+				chunk = this.safeLoadChunk(x, z);
 			}
 
-			if (chunk == null)
-			{
-				if (this.currentChunkProvider == null)
-				{
+			if (chunk == null) {
+				if (this.currentChunkProvider == null) {
 					chunk = this.defaultEmptyChunk;
-				}
-				else
-				{
-					try
-					{
-						chunk = this.currentChunkProvider.provideChunk(p_73158_1_, p_73158_2_);
-					}
-					catch (Throwable throwable)
-					{
+				} else {
+					try {
+						chunk = this.currentChunkProvider.provideChunk(x, z);
+					} catch (Throwable throwable) {
 						CrashReport crashreport = CrashReport.makeCrashReport(throwable, "Exception generating new chunk");
 						CrashReportCategory crashreportcategory = crashreport.makeCategory("Chunk to be generated");
-						crashreportcategory.addCrashSection("Location", String.format("%d,%d", new Object[] {Integer.valueOf(p_73158_1_), Integer.valueOf(p_73158_2_)}));
+						crashreportcategory.addCrashSection("Location", String.format("%d,%d", new Object[] {Integer.valueOf(x), Integer.valueOf(z)}));
 						crashreportcategory.addCrashSection("Position hash", Long.valueOf(k));
 						crashreportcategory.addCrashSection("Generator", this.currentChunkProvider.makeString());
 						throw new ReportedException(crashreport);
@@ -200,11 +177,10 @@ public class ChunkProviderServerFurious extends ChunkProviderServer {
 			}
 
 			synchronized (this.loadedChunkHashMap) {
-				this.loadedChunkHashMap.add(k, chunk);
-				this.loadedChunks.add(chunk);
+				beginLoadingChunk(k, chunk);
 				loadingChunks.remove(k);
 				chunk.onChunkLoad();
-				chunk.populateChunk(this, this, p_73158_1_, p_73158_2_);
+				chunk.populateChunk(this, this, x, z);
 			}
 		}
 
@@ -227,8 +203,7 @@ q	 * Will return back a chunk, if it doesn't exist and its not a MP client it wi
 				synchronized (chunksToSave) {
 					if (chunksToSave.containsKey(l)) {
 						chunk = this.chunksToSave.get(l);
-						this.loadedChunkHashMap.add(l, chunk);
-						this.loadedChunks.add(chunk);
+						beginLoadingChunk(l, chunk);
 						this.chunksToSave.remove(l);
 
 						int gracePeriod = this.chunkMaxGracePeriod.containsKey(l) ? this.chunkMaxGracePeriod.get(l) : 0;
@@ -244,38 +219,6 @@ q	 * Will return back a chunk, if it doesn't exist and its not a MP client it wi
 
 			synchronized (this.chunksToSave) {
 				return !this.worldObj.findingSpawnPoint && !this.loadChunkOnProvideRequest ? this.defaultEmptyChunk : this.loadChunk(p_73154_1_, p_73154_2_);
-			}
-		}
-	}
-
-	private void unloadChunkPartial(Chunk c) {
-		c.isChunkLoaded = false;
-		/* synchronized (FuriousCraftPartialTileUnloader.chunks) {
-			FuriousCraftPartialTileUnloader.chunks.add(chunk);
-		} */
-		c.worldObj.loadedTileEntityList.removeAll(c.chunkTileEntityMap.values());
-		for (List l : c.entityLists) {
-			c.worldObj.loadedEntityList.removeAll(l);
-			for (Entity e : (List<Entity>) l) {
-				c.worldObj.onEntityRemoved(e);
-			}
-		}
-	}
-
-	private void unloadChunkFinish(Chunk chunk) {
-		chunk.onChunkUnload();
-	}
-
-	private void loadChunkPartial(Chunk chunk) {
-		chunk.isChunkLoaded = true;
-		this.worldObj.func_147448_a(chunk.chunkTileEntityMap.values());
-
-		for (int i = 0; i < chunk.entityLists.length; ++i)
-		{
-			this.worldObj.loadedEntityList.addAll(chunk.entityLists[i]);
-			for (Entity e : (List<Entity>) chunk.entityLists[i]) {
-				e.isDead = false;
-				this.worldObj.onEntityAdded(e);
 			}
 		}
 	}
@@ -453,24 +396,32 @@ q	 * Will return back a chunk, if it doesn't exist and its not a MP client it wi
 	{
 		if (!this.worldObj.levelSaving) {
 			long currTime = (new Date()).getTime();
-			if (currTime >= time + 15000) {
+			isSaving = true;
+			if (state == State.CLEANING) {
+				if (chunksToSave.size() > 0) {
+					saveUngracedChunks(20);
+				}
+
+				if (chunksToSave.size() == 0) {
+					if (this.loadedChunks.size() == 0 && ForgeChunkManager.getPersistentChunksFor(this.worldObj).size() == 0 && !DimensionManager.shouldLoadSpawn(this.worldObj.provider.dimensionId)) {
+						DimensionManager.unloadWorld(this.worldObj.provider.dimensionId);
+						return currentChunkProvider.unloadQueuedChunks();
+					}
+					state = State.WAITING;
+				}
+			} else if (state == State.WAITING && currTime >= time + 15000) {
 				int queued = 0;
 				int graced = 0;
-				isSaving = true;
+				state = State.CLEANING;
 
-				long[] keys = this.chunksToSave.keys();
-				int totalSaved = keys.length;
-				for (long l : keys) {
-					Chunk chunk = this.chunksToSave.get(l);
-					finishSavingChunk(l, chunk);
-				}
+				saveUngracedChunks(20);
 
 				if (this.loadedChunks.size() == 0 && this.chunksToSave.size() == 0 && ForgeChunkManager.getPersistentChunksFor(this.worldObj).size() == 0 && !DimensionManager.shouldLoadSpawn(this.worldObj.provider.dimensionId)) {
 					DimensionManager.unloadWorld(this.worldObj.provider.dimensionId);
 					return currentChunkProvider.unloadQueuedChunks();
 				}
 
-				keys = chunksToUnload.toArray();
+				long[] keys = chunksToUnload.toArray();
 				for (long l : keys) {
 					Chunk chunk = (Chunk) loadedChunkHashMap.getValueByKey(l);
 
@@ -497,10 +448,13 @@ q	 * Will return back a chunk, if it doesn't exist and its not a MP client it wi
 					this.currentChunkLoader.chunkTick();
 				}
 
-				System.out.println(String.format("GC TICK: %d[%d] chunks loaded (%d queued, %d saved, %d graced)", this.loadedChunks.size(), this.loadedChunks.size() - this.chunksToUnload.size(), queued, totalSaved, graced));
-				isSaving = false;
+				System.out.println(String.format("GC TICK: %d[%d] chunks loaded (%d queued, %d graced)", this.loadedChunks.size(), this.loadedChunks.size() - this.chunksToUnload.size(), queued, graced));
 				time = currTime;
+				if (chunksToSave.size() == 0) {
+					state = State.WAITING;
+				}
 			}
+			isSaving = false;
 		}
 
 		return this.currentChunkProvider.unloadQueuedChunks();
@@ -542,17 +496,70 @@ q	 * Will return back a chunk, if it doesn't exist and its not a MP client it wi
 
 	public void recreateStructures(int p_82695_1_, int p_82695_2_) {}
 
+	private void unloadChunkPartial(Chunk c) {
+		c.isChunkLoaded = false;
+		synchronized (c) {
+			c.worldObj.loadedTileEntityList.removeAll(c.chunkTileEntityMap.values());
+			for (List l : c.entityLists) {
+				c.worldObj.loadedEntityList.removeAll(l);
+				for (Entity e : (List<Entity>) l) {
+					c.worldObj.onEntityRemoved(e);
+				}
+			}
+		}
+	}
+
+	private void unloadChunkFinish(Chunk chunk) {
+		chunk.onChunkUnload();
+	}
+
+	private void loadChunkPartial(Chunk chunk) {
+		chunk.isChunkLoaded = true;
+		synchronized (chunk) {
+			this.worldObj.func_147448_a(chunk.chunkTileEntityMap.values());
+
+			for (int i = 0; i < chunk.entityLists.length; ++i) {
+				this.worldObj.loadedEntityList.addAll(chunk.entityLists[i]);
+				for (Entity e : (List<Entity>) chunk.entityLists[i]) {
+					if (worldObj.getEntityByID(e.getEntityId()) == null) {
+						this.worldObj.loadedEntityList.add(e);
+						this.worldObj.onEntityAdded(e);
+					}
+				}
+			}
+		}
+	}
+
+	private void beginLoadingChunk(long k, Chunk chunk) {
+		this.loadedChunkHashMap.add(k, chunk);
+		this.loadedChunks.add(chunk);
+	}
+
 	private void finishSavingChunk(long l, Chunk chunk) {
 		synchronized (chunksToSave) {
 			if (chunk != null) {
 				unloadChunkFinish(chunk);
 				this.safeSaveChunk(chunk);
 				this.safeSaveExtraChunkData(chunk);
+				this.chunksToUnload.remove(l);
 				this.chunkGracePeriod.remove(l);
 				this.chunkMaxGracePeriod.remove(l);
 				ForgeChunkManager.putDormantChunk(ChunkCoordIntPair.chunkXZ2Int(chunk.xPosition, chunk.zPosition), chunk);
 			}
 			this.chunksToSave.remove(l);
+		}
+	}
+
+	private void saveUngracedChunks(int limit) {
+		long[] keys = this.chunksToSave.keys();
+		int saved = 0;
+		for (long l : keys) {
+			Chunk chunk = this.chunksToSave.get(l);
+			saved++;
+			finishSavingChunk(l, chunk);
+			if (saved >= limit) {
+				return;
+			}
 		}
 	}
 }
